@@ -5,7 +5,7 @@ import os
 import re
 from collections import Counter
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 
 
 FAILED_PATTERNS = [
@@ -38,12 +38,6 @@ def risk_label(level: str) -> str:
 
 
 def score_bruteforce(count: int, medium_threshold: int, high_threshold: int) -> str:
-    """
-    Simple threshold scoring:
-      - HIGH if count >= high_threshold
-      - MEDIUM if count >= medium_threshold
-      - LOW otherwise
-    """
     if count >= high_threshold:
         return "HIGH"
     if count >= medium_threshold:
@@ -57,8 +51,8 @@ def parse_lines(lines: List[str]) -> Dict[str, Any]:
     success_users = Counter()
     success_ips = Counter()
 
-    failed_samples = []
-    success_samples = []
+    failed_samples: List[str] = []
+    success_samples: List[str] = []
 
     for line in lines:
         line = line.strip()
@@ -109,46 +103,34 @@ def parse_lines(lines: List[str]) -> Dict[str, Any]:
     }
 
 
+def build_ranked_risk_list(items: Dict[str, int], medium: int, high: int, kind: str) -> List[Dict[str, Any]]:
+    ranked: List[Dict[str, Any]] = []
+    for key, count in sorted(items.items(), key=lambda x: x[1], reverse=True):
+        level = score_bruteforce(count, medium, high)
+        ranked.append({
+            kind: key,
+            "failed_attempts": count,
+            "risk": level,
+            "label": risk_label(level),
+        })
+    return ranked
+
+
 def build_risk_findings(results: Dict[str, Any],
                         ip_medium: int,
                         ip_high: int,
                         user_medium: int,
                         user_high: int) -> Dict[str, Any]:
-    """
-    Create risk findings based on failed login counters.
-    """
     failed_ip_counts = results["failed"]["raw_counters"]["ips"]
     failed_user_counts = results["failed"]["raw_counters"]["users"]
 
-    ip_findings: List[Dict[str, Any]] = []
-    user_findings: List[Dict[str, Any]] = []
-
-    for ip, count in sorted(failed_ip_counts.items(), key=lambda x: x[1], reverse=True):
-        level = score_bruteforce(count, ip_medium, ip_high)
-        if level != "LOW":
-            ip_findings.append({
-                "ip": ip,
-                "failed_attempts": count,
-                "risk": level,
-                "label": risk_label(level),
-                "reason": f"Failed SSH attempts from IP >= {ip_medium} (MEDIUM) / {ip_high} (HIGH)."
-            })
-
-    for user, count in sorted(failed_user_counts.items(), key=lambda x: x[1], reverse=True):
-        level = score_bruteforce(count, user_medium, user_high)
-        if level != "LOW":
-            user_findings.append({
-                "user": user,
-                "failed_attempts": count,
-                "risk": level,
-                "label": risk_label(level),
-                "reason": f"Failed SSH attempts against user >= {user_medium} (MEDIUM) / {user_high} (HIGH)."
-            })
+    ranked_ips = build_ranked_risk_list(failed_ip_counts, ip_medium, ip_high, "ip")
+    ranked_users = build_ranked_risk_list(failed_user_counts, user_medium, user_high, "user")
 
     overall = "LOW"
-    if any(f["risk"] == "HIGH" for f in ip_findings + user_findings):
+    if any(x["risk"] == "HIGH" for x in ranked_ips + ranked_users):
         overall = "HIGH"
-    elif any(f["risk"] == "MEDIUM" for f in ip_findings + user_findings):
+    elif any(x["risk"] == "MEDIUM" for x in ranked_ips + ranked_users):
         overall = "MEDIUM"
 
     return {
@@ -156,30 +138,61 @@ def build_risk_findings(results: Dict[str, Any],
             "ip_medium": ip_medium,
             "ip_high": ip_high,
             "user_medium": user_medium,
-            "user_high": user_high
+            "user_high": user_high,
         },
         "overall_risk": overall,
         "overall_label": risk_label(overall),
-        "bruteforce_by_ip": ip_findings[:10],
-        "bruteforce_by_user": user_findings[:10],
+
+        # Always include these (LOW included)
+        "ranked_failed_ips": ranked_ips[:10],
+        "ranked_failed_users": ranked_users[:10],
+
+        # Alerts only (MEDIUM/HIGH)
+        "alerts_by_ip": [x for x in ranked_ips if x["risk"] != "LOW"][:10],
+        "alerts_by_user": [x for x in ranked_users if x["risk"] != "LOW"][:10],
     }
+
+
+def print_table(title: str, headers: List[str], rows: List[List[str]]) -> None:
+    print(title)
+    col_widths = [len(h) for h in headers]
+    for r in rows:
+        for i, cell in enumerate(r):
+            col_widths[i] = max(col_widths[i], len(cell))
+
+    def fmt_row(r: List[str]) -> str:
+        return " | ".join(r[i].ljust(col_widths[i]) for i in range(len(r)))
+
+    print(fmt_row(headers))
+    print("-+-".join("-" * w for w in col_widths))
+    for r in rows:
+        print(fmt_row(r))
+    print("")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Analyze Linux authentication logs for SSH login successes/failures and summarize results."
     )
-    parser.add_argument("--log", dest="log_path", default=None,
-                        help="Path to auth log (default: auto-detect /var/log/auth.log, /var/log/secure, or /var/log/syslog).")
+    parser.add_argument(
+        "--log",
+        dest="log_path",
+        default=None,
+        help="Path to auth log (default: auto-detect /var/log/auth.log, /var/log/secure, or /var/log/syslog).",
+    )
 
-    # Thresholds: tuneable, but sane defaults
+    # Thresholds (tuneable)
     parser.add_argument("--ip-medium", type=int, default=5, help="Failed attempts from one IP to trigger MEDIUM risk.")
     parser.add_argument("--ip-high", type=int, default=15, help="Failed attempts from one IP to trigger HIGH risk.")
     parser.add_argument("--user-medium", type=int, default=5, help="Failed attempts against one user to trigger MEDIUM risk.")
     parser.add_argument("--user-high", type=int, default=15, help="Failed attempts against one user to trigger HIGH risk.")
 
-    parser.add_argument("--out", dest="out_path", default=None,
-                        help="Output JSON path (default: reports/auth_report_<timestamp>.json).")
+    parser.add_argument(
+        "--out",
+        dest="out_path",
+        default=None,
+        help="Output JSON path (default: reports/auth_report_<timestamp>.json).",
+    )
     args = parser.parse_args()
 
     log_path = args.log_path or detect_default_log_path()
@@ -205,7 +218,7 @@ def main() -> None:
         ip_medium=args.ip_medium,
         ip_high=args.ip_high,
         user_medium=args.user_medium,
-        user_high=args.user_high
+        user_high=args.user_high,
     )
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -224,7 +237,7 @@ def main() -> None:
             indent=2,
         )
 
-        # Console summary
+    # Console summary
     print("✅ Auth Log Analyzer Report")
     print(f"Log file: {log_path}")
     print(f"JSON saved: {out_path}")
@@ -236,62 +249,30 @@ def main() -> None:
     print(f"Overall risk:      {findings['overall_label']}")
     print("")
 
-    def print_table(title: str, headers: List[str], rows: List[List[str]]) -> None:
-        print(title)
-        col_widths = [len(h) for h in headers]
-        for r in rows:
-            for i, cell in enumerate(r):
-                col_widths[i] = max(col_widths[i], len(cell))
-
-        def fmt_row(r: List[str]) -> str:
-            return " | ".join(r[i].ljust(col_widths[i]) for i in range(len(r)))
-
-        print(fmt_row(headers))
-        print("-+-".join("-" * w for w in col_widths))
-        for r in rows:
-            print(fmt_row(r))
-        print("")
-
-    # Table: brute-force by IP
+    # Tables always show (LOW included)
     ip_rows: List[List[str]] = []
-    for item in findings["bruteforce_by_ip"][:5]:
-        ip_rows.append([
-            item["ip"],
-            str(item["failed_attempts"]),
-            item["label"],
-        ])
+    for item in findings["ranked_failed_ips"][:5]:
+        ip_rows.append([item["ip"], str(item["failed_attempts"]), item["label"]])
+    if not ip_rows:
+        ip_rows = [["(none)", "0", risk_label("LOW")]]
 
-    if ip_rows:
-        print_table(
-            title="=== BRUTE-FORCE INDICATORS BY IP (TOP 5) ===",
-            headers=["IP Address", "Failed Attempts", "Risk"],
-            rows=ip_rows,
-        )
-    else:
-        print("=== BRUTE-FORCE INDICATORS BY IP ===")
-        print("No IPs exceeded the MEDIUM/HIGH thresholds.\n")
-
-    # Table: brute-force by user
     user_rows: List[List[str]] = []
-    for item in findings["bruteforce_by_user"][:5]:
-        user_rows.append([
-            item["user"],
-            str(item["failed_attempts"]),
-            item["label"],
-        ])
+    for item in findings["ranked_failed_users"][:5]:
+        user_rows.append([item["user"], str(item["failed_attempts"]), item["label"]])
+    if not user_rows:
+        user_rows = [["(none)", "0", risk_label("LOW")]]
 
-    if user_rows:
-        print_table(
-            title="=== BRUTE-FORCE INDICATORS BY USER (TOP 5) ===",
-            headers=["Username", "Failed Attempts", "Risk"],
-            rows=user_rows,
-        )
-    else:
-        print("=== BRUTE-FORCE INDICATORS BY USER ===")
-        print("No users exceeded the MEDIUM/HIGH thresholds.\n")
+    print_table(
+        title="=== TOP FAILED IPS (TOP 5) ===",
+        headers=["IP Address", "Failed Attempts", "Risk"],
+        rows=ip_rows,
+    )
 
-    print("Done.")
-
+    print_table(
+        title="=== TOP TARGETED USERS (TOP 5) ===",
+        headers=["Username", "Failed Attempts", "Risk"],
+        rows=user_rows,
+    )
 
     print("Done.")
 
