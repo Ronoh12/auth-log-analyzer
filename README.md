@@ -10,6 +10,16 @@ A lightweight **Blue Team / SOC-style** Python tool that analyzes Linux authenti
 Works well on Ubuntu and WSL.
 
 ---
+## 🧪 Risk Scoring
+The tool detects possible brute-force behavior using simple thresholds:
+- **[MEDIUM RISK]** if failed attempts from one IP/user ≥ 5
+- **[HIGH RISK]** if failed attempts from one IP/user ≥ 15
+
+You can tune thresholds:
+```bash
+python3 src/analyze_auth_log.py --ip-medium 3 --ip-high 10 --user-medium 3 --user-high 10
+
+
 
 ## 🔧 Tools Used
 - Python 3 (stdlib only)
