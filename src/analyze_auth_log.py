@@ -224,25 +224,74 @@ def main() -> None:
             indent=2,
         )
 
-    # Console summary
+        # Console summary
     print("✅ Auth Log Analyzer Report")
     print(f"Log file: {log_path}")
     print(f"JSON saved: {out_path}")
     print("")
-    print(f"Failed logins: {results['failed']['total']}")
-    print(f"Overall risk: {findings['overall_label']}")
+
+    print("=== SUMMARY ===")
+    print(f"Failed logins:     {results['failed']['total']}")
+    print(f"Successful logins: {results['success']['total']}")
+    print(f"Overall risk:      {findings['overall_label']}")
     print("")
 
-    if findings["bruteforce_by_ip"]:
-        print("Brute-force indicators by IP (top):")
-        for item in findings["bruteforce_by_ip"][:5]:
-            print(f"  - {item['ip']}: {item['failed_attempts']} {item['label']}")
+    def print_table(title: str, headers: List[str], rows: List[List[str]]) -> None:
+        print(title)
+        col_widths = [len(h) for h in headers]
+        for r in rows:
+            for i, cell in enumerate(r):
+                col_widths[i] = max(col_widths[i], len(cell))
+
+        def fmt_row(r: List[str]) -> str:
+            return " | ".join(r[i].ljust(col_widths[i]) for i in range(len(r)))
+
+        print(fmt_row(headers))
+        print("-+-".join("-" * w for w in col_widths))
+        for r in rows:
+            print(fmt_row(r))
         print("")
-    if findings["bruteforce_by_user"]:
-        print("Brute-force indicators by user (top):")
-        for item in findings["bruteforce_by_user"][:5]:
-            print(f"  - {item['user']}: {item['failed_attempts']} {item['label']}")
-        print("")
+
+    # Table: brute-force by IP
+    ip_rows: List[List[str]] = []
+    for item in findings["bruteforce_by_ip"][:5]:
+        ip_rows.append([
+            item["ip"],
+            str(item["failed_attempts"]),
+            item["label"],
+        ])
+
+    if ip_rows:
+        print_table(
+            title="=== BRUTE-FORCE INDICATORS BY IP (TOP 5) ===",
+            headers=["IP Address", "Failed Attempts", "Risk"],
+            rows=ip_rows,
+        )
+    else:
+        print("=== BRUTE-FORCE INDICATORS BY IP ===")
+        print("No IPs exceeded the MEDIUM/HIGH thresholds.\n")
+
+    # Table: brute-force by user
+    user_rows: List[List[str]] = []
+    for item in findings["bruteforce_by_user"][:5]:
+        user_rows.append([
+            item["user"],
+            str(item["failed_attempts"]),
+            item["label"],
+        ])
+
+    if user_rows:
+        print_table(
+            title="=== BRUTE-FORCE INDICATORS BY USER (TOP 5) ===",
+            headers=["Username", "Failed Attempts", "Risk"],
+            rows=user_rows,
+        )
+    else:
+        print("=== BRUTE-FORCE INDICATORS BY USER ===")
+        print("No users exceeded the MEDIUM/HIGH thresholds.\n")
+
+    print("Done.")
+
 
     print("Done.")
 
